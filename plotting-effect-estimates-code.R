@@ -3,17 +3,31 @@
 #####
 #setup stuff
 #####
+
+#clear prior working directory
+#I like to do this so I don't mix up datasets 
+#but it removes all the history in your R session so be careful!
+rm(list = ls(all.names = TRUE))
+
 #load libraries
 library(tidyverse)
 library(lme4)
-
+library(multcomp)#needed for glht function
 #set working directory--I use navigation bar to set to source file location
 
 #load the dataset from PAG et al 2021
 d <- as_tibble(read.csv("data-for-plotting.csv"))
 
-#check out the dataset
-d
+prop2mdata <- d%>% #prop2mdata is just a subset of the original dataset
+  filter(!grepl("call", stim))%>% #remove any stimulus that has "call" in it (we don't need these)
+  group_by(video, stim)%>% #group by video ID and stimulus type
+  slice(1) #and keep the first observation for each (the others are replicates)
+
+#now just save the columns we care about 
+prop2mdata <- prop2mdata[,c("video", "grp", "stim", "loc", "field.grp.sz", "mean.in2m", "mean.out2m", "stim.mean.prop2m")]
+
+#remove NAs across the dataset
+prop2mdata <- prop2mdata[complete.cases(prop2mdata),]
 
 #####
 #building our statistical model
@@ -39,7 +53,7 @@ summary(glht(reduced2mmodel, linfct = mcp(stim = c("t_scents - c_scents = 0",
 #control responses don't differ and treatment responses don't differ
 
 #summary stats of the stimulus effect
-prop2mdata%>%
+d%>%
   group_by(stim)%>%
   summarise(mean(stim.mean.prop2m), sd(stim.mean.prop2m))
 
@@ -81,8 +95,6 @@ newdata <- with(prop2mdata,
                   loc = c("Core", "Non-core"), #location options
                   stim.mean.prop2m=0 #this will be filled in from the model predictions
                 ))
-#compare to prop2mdata
-prop2mdata
 
 #take the values of response variable from the reduced model above
 mm <- model.matrix(terms(reduced2mmodel), newdata)
@@ -99,6 +111,7 @@ newdata <- data.frame(newdata,
 
 #convert to response scale
 #this function converts logit to probability https://sebastiansauer.github.io/convert_logit2prob/ 
+#remember our y-axis for plotting is a probability, so we have to convert our model predictions to that scale!
 logit2prob <- function(logit){
   odds <- exp(logit)
   prob <- odds / (1 + odds)
@@ -106,7 +119,7 @@ logit2prob <- function(logit){
 }
 
 #add upper and lower confidence intervals, and upper and lower standard errors, to newdata
-newdata$uci <- logit2prob(newdata$phi.ci)
+newdata$uci <- logit2prob(newdata$phi.ci)#just running the function above a few times
 newdata$lci <- logit2prob(newdata$plo.ci)
 newdata$use <- logit2prob(newdata$phi.se)
 newdata$lse <- logit2prob(newdata$plo.se)
@@ -147,8 +160,8 @@ plotnewdata2 <- newdata%>%
   summarise(mean(stim.mean.prop2m), mean(lci), mean(uci))
 names(plotnewdata2) <- c("stim", "stim.mean.prop2m", "lci", "uci")
 
-ggplot(d = prop2mdata, aes(x = stim, y = stim.mean.prop2m))+ #start with the raw data
-  geom_jitter(width = 0.05, alpha = 0.25, pch=ifelse(grepl("c_", prop2mdata$stim), 17,19), cex=2.5)+ #use geom_jitter to add raw data points
+ggplot(d = d, aes(x = stim, y = stim.mean.prop2m))+ #start with the raw data
+  geom_jitter(width = 0.05, alpha = 0.25, pch=ifelse(grepl("c_", d$stim), 17,19), cex=2.5)+ #use geom_jitter to add raw data points
   geom_point(d = plotnewdata2, aes(x = stim, y = stim.mean.prop2m), shape = rep(c(17,19),2), cex = 4)+ #now use geom_point to add the model estimate means
   geom_linerange(d = plotnewdata2, aes(x=stim,ymin=lci,ymax=uci),size=1.5,position=position_dodge(width=0.25)) + #and geom_linerange to add the standard errors
   #things below this line just make it look pretty
@@ -164,7 +177,8 @@ ggplot(d = prop2mdata, aes(x = stim, y = stim.mean.prop2m))+ #start with the raw
 #####
 #plotting raw data for continuous predictors w/ ggplot
 #####
-ggplot(data = prop2mdata, aes(x = field.grp.sz, y = stim.mean.prop2m))+
+#here's how we would do this in regular ol' ggplot
+ggplot(data = d, aes(x = field.grp.sz, y = stim.mean.prop2m))+
   geom_point()+
   geom_smooth(method = "lm", col = "black")+
   scale_y_continuous(breaks = seq(0,1.2,0.25), limits = c(-0.05, 1.15))+
@@ -231,7 +245,7 @@ ggplot(data = prop2mdata, aes(x = field.grp.sz, y = stim.mean.prop2m))+
   ylab("Proportion approaching stimulus")+
   theme_bw()+
   theme(text = element_text(size = 14), axis.text = element_text(size = 12))
-
+#nice and pretty!
 
 #####
 # another technique for other types of models
@@ -255,6 +269,8 @@ summary(igis.age$n.igis.tot) #really right-skewed!
 igis.age$olre <- as.factor(row.names(igis.age))
 
 #build the model--a negative binomial model!
+install.packages("glmmTMB")
+library(glmmTMB)
 #using scaled predictor and obs-level random effect
 mod.olre <- glmmTMB(data = igis.age, formula = n.igis.tot~scale(max.age.tot) + (1|olre), family = nbinom2)
 hist(residuals(mod.olre))#histogram of residuals looks good
@@ -268,6 +284,7 @@ summary(mod.olre)
 ggplot(data = igis.age, aes(x = max.age.tot/365, y = n.igis.tot))+ #i've adjusted max.age.tot to be in years, not days
   geom_point()+
   geom_smooth(method = "glm", method.args = list(family = nbinom2), col = "black")+
+  #geom_smooth()+
   ylim(c(0, 200))+
   scale_x_continuous(breaks = c(0,3,6,9,12))+
   xlab("Age (years)")+
@@ -278,22 +295,23 @@ ggplot(data = igis.age, aes(x = max.age.tot/365, y = n.igis.tot))+ #i've adjuste
 #####
 #plot model effect for continuous predictors, v2
 #####
-#use the effect package
+#use the effects package
 #you basically tell effects the following
 #the term/variable you want to plot on the x axis using the language in the model (here, max.age.tot, but w/ scale())
 #the "levels" of that variable (here, a sequence from minimum to max, by 100 days)
 #the model you want to plot from
 #MAKE SURE you recognize it as a data frame!
-ef.data <- as.data.frame(effect(term = "scale(max.age.tot)", xlevels = list(max.age.tot = seq(min(igis.age$max.age.tot), max(igis.age$max.age.tot), by = 100)), mod = mod.olre))
+ef.data <- effect(term = "scale(max.age.tot)", xlevels = list(max.age.tot = seq(min(igis.age$max.age.tot), max(igis.age$max.age.tot), by = 100)), mod = mod.olre)
+ef.data <- as.data.frame(ef.data)
 #you also have to make a new "fit" variable in your RAW data that is the same as your y-axis variable.
 #this is just easier for ggplot to figure out. 
-igis.age$fit <- igis.age$n.igis.tot
+#igis.age$fit <- igis.age$n.igis.tot
 
 #now plot it!
 ggplot(data = ef.data, aes(x = max.age.tot/365, y = fit))+
   geom_line()+
   geom_ribbon(aes(ymin = fit-se, ymax = fit+se), alpha = 0.25)+
-  geom_point(data = igis.age, aes(x = max.age.tot/365, y = fit))+ #note the change in dataset here!
+  geom_point(data = igis.age, aes(x = max.age.tot/365, y = n.igis.tot))+ #note the change in dataset here!
   scale_x_continuous(breaks = c(0,3,6,9,12))+
   xlab("Age (years)")+
   ylab("Number of lifetime intergroup contests")
